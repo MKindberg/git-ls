@@ -1,5 +1,8 @@
 const std = @import("std");
+const ts = @import("tree-sitter");
 const lint = @import("lint.zig");
+
+extern fn tree_sitter_git_config() callconv(.c) *ts.Language;
 const Io = std.Io;
 
 const SubSubConfigMap = std.StringHashMap(void);
@@ -9,7 +12,12 @@ pub const ConfigMap = std.StringHashMap(SubConfigMap);
 fn createConfigMap(allocator: std.mem.Allocator, io: std.Io) !ConfigMap {
     var configs = ConfigMap.init(allocator);
 
-    const git_result = try std.process.run(allocator, io, .{ .argv = &[_][]const u8{ "git", "help", "--config" } });
+    var run_env = try std.process.Environ.empty.createMap(allocator);
+    defer run_env.deinit();
+    try run_env.put("GIT_CONFIG_NOSYSTEM", "1");
+    try run_env.put("GIT_CONFIG_GLOBAL", "/dev/null");
+    try run_env.put("GIT_CONFIG", "/dev/null");
+    const git_result = try std.process.run(allocator, io, .{ .argv = &[_][]const u8{ "git", "help", "--config" }, .environ_map = &run_env });
     if (git_result.term != .exited or git_result.term.exited != 0) {
         std.debug.print("Failed to get manual for git-config: {s}\n", .{git_result.stderr});
         std.process.exit(1);
@@ -36,6 +44,13 @@ fn createConfigMap(allocator: std.mem.Allocator, io: std.Io) !ConfigMap {
 }
 
 pub fn main(init: std.process.Init) !u8 {
+    const language = tree_sitter_git_config();
+    defer language.destroy();
+
+    const parser = ts.Parser.create();
+    defer parser.destroy();
+    try parser.setLanguage(language);
+
     const configs = try createConfigMap(init.arena.allocator(), init.io);
 
     var args = init.minimal.args.iterate();
@@ -45,8 +60,11 @@ pub fn main(init: std.process.Init) !u8 {
     const content = try std.Io.Dir.cwd().readFileAlloc(init.io, file, init.gpa, .unlimited);
     defer init.gpa.free(content);
 
+    const tree = parser.parseString(content, null);
+    defer tree.?.destroy();
+    var cursor = tree.?.walk();
     if (std.mem.eql(u8, command, "lint")) {
-        var errors = try lint.lint(init.gpa, configs, file, content);
+        var errors = try lint.lint(init.gpa, configs, file, content, &cursor);
         defer errors.deinit(init.gpa);
         for (errors.items) |e| {
             std.debug.print("{s}:{} {s}\n", .{ e.filename, e.line, e.message() });

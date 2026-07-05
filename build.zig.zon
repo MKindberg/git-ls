@@ -3,7 +3,16 @@
     .version = "0.0.0",
     .fingerprint = 0xf39d5306769645d1,
     .minimum_zig_version = "0.16.0",
-    .dependencies = .{},
+    .dependencies = .{
+        .tree_sitter_git_config = .{
+            .url = "git+https://github.com/mkindberg/tree-sitter-git-config#f301d40335d88cdbc646fa03ea73bf9c936ba3eb",
+            .hash = "tree_sitter_git_config-0.0.0-RSFQn8x3AQA35hw6lzZN7C47Q4_Ia0P5OloaVbm5mW2u",
+        },
+        .tree_sitter = .{
+            .url = "git+https://github.com/tree-sitter/zig-tree-sitter#b562510b5563dcf3b7fcac4a5fe9d60834c84667",
+            .hash = "tree_sitter-0.26.0-8heIf-vDAQDh0HhAAUVwVZFmLrwSKMZl5gRaVFqtas0W",
+        },
+    },
     .paths = .{
         "build.zig",
         "build.zig.zon",

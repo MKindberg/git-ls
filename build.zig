@@ -14,6 +14,18 @@ pub fn build(b: *std.Build) void {
         }),
     });
 
+    const tree_sitter = b.dependency("tree_sitter", .{
+        .target = target,
+        .optimize = optimize,
+    });
+    exe.root_module.addImport("tree-sitter", tree_sitter.module("tree_sitter"));
+
+    const ts_git_config = b.dependency("tree_sitter_git_config", .{
+        .target = target,
+        .optimize = optimize,
+    });
+    exe.root_module.linkLibrary(ts_git_config.artifact("tree-sitter-git-config"));
+
     b.installArtifact(exe);
 
     const run_step = b.step("run", "Run the app");

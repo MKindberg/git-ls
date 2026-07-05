@@ -1,5 +1,9 @@
 const std = @import("std");
+
+const ts = @import("tree-sitter");
+
 const ConfigMap = @import("main.zig").ConfigMap;
+
 const Err = struct {
     filename: []const u8,
     line: usize,
@@ -20,119 +24,129 @@ const Err = struct {
     }
 };
 
-fn hasConfig(configs: ConfigMap, level1: []const u8, level2: ?[]const u8, level3: ?[]const u8) bool {
+fn hasOption(configs: ConfigMap, section: []const u8, subsection: ?[]const u8, name: ?[]const u8) bool {
     var buf: [64]u8 = undefined;
     var buf2: [64]u8 = undefined;
     var l1_keys = configs.keyIterator();
     const l2 = l2: while (l1_keys.next()) |k| {
-        if (std.mem.eql(u8, std.ascii.lowerString(&buf, level1), std.ascii.lowerString(&buf2, k.*))) break :l2 configs.get(k.*).?;
+        if (std.mem.eql(u8, std.ascii.lowerString(&buf, section), std.ascii.lowerString(&buf2, k.*))) break :l2 configs.get(k.*).?;
     } else return false;
 
-    if (level2 == null) return true;
+    if (subsection == null and name == null) return true;
     var l2_keys = l2.keyIterator();
     while (l2_keys.next()) |k| {
-        if (std.mem.eql(u8, std.ascii.lowerString(&buf, level2.?), std.ascii.lowerString(&buf2, k.*)) or k.*[0] == '<' or k.*[0] == '*') {
-            if (level3 == null) return true;
+        if (std.mem.eql(u8, std.ascii.lowerString(&buf, subsection orelse name.?), std.ascii.lowerString(&buf2, k.*)) or k.*[0] == '<' or k.*[0] == '*') {
+            if (subsection == null or name == null) return true;
             const l3 = l2.get(k.*).?;
             var l3_keys = l3.keyIterator();
             while (l3_keys.next()) |kk| {
-                if (std.mem.eql(u8, std.ascii.lowerString(&buf, level3.?), std.ascii.lowerString(&buf, kk.*)) or kk.*[0] == '<' or k.*[0] == '*') return true;
+                if (std.mem.eql(u8, std.ascii.lowerString(&buf, name.?), std.ascii.lowerString(&buf, kk.*)) or kk.*[0] == '<' or k.*[0] == '*') return true;
             }
         }
     }
     return false;
 }
 
-pub fn lint(allocator: std.mem.Allocator, configs: ConfigMap, filename: []const u8, content: []const u8) !std.ArrayList(Err) {
+fn nextNode(cursor: *ts.TreeCursor, skip_children: bool) bool {
+    if (!skip_children and cursor.gotoFirstChild()) return true;
+    if (cursor.gotoNextSibling()) return true;
+    while (cursor.gotoParent()) {
+        if (cursor.gotoNextSibling()) return true;
+    }
+    return false;
+}
+
+fn skipSection(cursor: *ts.TreeCursor) void {
+    while (!std.mem.eql(u8, cursor.node().kind(), "section")) _ = cursor.gotoParent();
+}
+
+pub fn lint(allocator: std.mem.Allocator, configs: ConfigMap, filename: []const u8, content: []const u8, cursor: *ts.TreeCursor) !std.ArrayList(Err) {
     var errors = std.ArrayList(Err).empty;
     errdefer errors.deinit(allocator);
 
-    var lines = std.mem.splitScalar(u8, content, '\n');
-    var level1: ?[]const u8 = null;
-    var level2: ?[]const u8 = null;
+    if (cursor.node().isError()) {
+        try errors.append(allocator, Err.init(filename, 1, 1, 1, "Failed to parse config", .{}));
+        return errors;
+    }
 
-    var l: usize = 1;
-    while (lines.next()) |line| : (l += 1) {
-        var c: usize = 0;
-        while (c < line.len and std.ascii.isWhitespace(line[c])) c += 1;
-        // Parse section
-        if (c == line.len) continue;
-        if (line[c] == '#' or line[c] == ';') continue;
-        if (line[c] == '[') {
-            level1 = null;
-            level2 = null;
-            const section_start = c + 1;
-            const section_end = std.mem.findAnyPos(u8, line, c, ". ]") orelse {
-                try errors.append(allocator, Err.init(filename, l, 0, line.len, "Missing end bracket", .{}));
-                return errors;
-            };
-            level1 = line[section_start..section_end];
-            if (!hasConfig(configs, level1.?, null, null)) {
-                try errors.append(allocator, Err.init(filename, l, section_start, section_end, "Invalid section '{s}'", .{level1.?}));
-                continue;
-            }
-            c = section_end;
-            while (c < line.len and std.ascii.isWhitespace(line[c])) c += 1;
-            if (line[c] == '.') {
-                const subsection_start = c + 1;
-                const subsection_end = std.mem.findAnyPos(u8, line, c, " ]") orelse {
-                    try errors.append(allocator, Err.init(filename, l, 0, line.len, "Missing end bracket", .{}));
-                    return errors;
-                };
-                level2 = line[subsection_start..subsection_end];
-                if (!hasConfig(configs, level1.?, level2.?, null)) {
-                    try errors.append(allocator, Err.init(filename, l, section_start, section_end, "Invalid subsection '{s}'", .{level2.?}));
-                    continue;
-                }
-                c = subsection_end;
-            }
-            if (line[c] == '"') {
-                c += 1;
-                const subsection_start = c;
-                const subsection_end = std.mem.findScalarPos(u8, line, c, '"') orelse {
-                    try errors.append(allocator, Err.init(filename, l, 0, line.len, "Missing end quote", .{}));
-                    return errors;
-                };
-                level2 = line[subsection_start..subsection_end];
-                if (!hasConfig(configs, level1.?, level2.?, null)) {
-                    try errors.append(allocator, Err.init(filename, l, section_start, section_end, "Invalid subsection '{s}'", .{level2.?}));
-                    continue;
-                }
-                c = subsection_end + 1;
-            }
-            while (c < line.len and std.ascii.isWhitespace(line[c])) c += 1;
-            if (line[c] != ']') {
-                try errors.append(allocator, Err.init(filename, l, 0, line.len, "Missing end bracket", .{}));
-                return errors;
-            }
-            c += 1;
-            while (c < line.len and std.ascii.isWhitespace(line[c])) c += 1;
-            if (c != line.len and c != '#') {
-                try errors.append(allocator, Err.init(filename, l, c, line.len, "Text after bracket no allowed", .{}));
-                continue;
-            }
+    var section_name: ?[]const u8 = null;
+    var subsection_name: ?[]const u8 = null;
+    var skip_children = false;
+    while (nextNode(cursor, skip_children)) {
+        skip_children = false;
+        const node = cursor.node();
+        if (node.isError()) {
+            try errors.append(allocator, Err.init(
+                filename,
+                node.startPoint().row,
+                node.startPoint().column,
+                node.endPoint().column,
+                "Invalid {s}: '{s}",
+                .{ node.child(0).?.kind(), content[node.startByte()..node.endByte()] },
+            ));
+            skip_children = true;
             continue;
-        } else {
-            if (level1 == null) {
-                try errors.append(allocator, Err.init(filename, l, 0, line.len, "Line not part of any section", .{}));
-                continue;
+        }
+        if (node.isMissing()) {
+            const parent = node.parent().?;
+            const parent_expr = content[parent.startByte()..parent.endByte()];
+            try errors.append(allocator, Err.init(
+                filename,
+                node.startPoint().row,
+                node.startPoint().column,
+                node.endPoint().column,
+                "Missing '{s}' in '{s}'",
+                .{ node.kind(), parent_expr },
+            ));
+        }
+        if (std.mem.eql(u8, node.kind(), "section_name")) {
+            section_name = content[node.startByte()..node.endByte()];
+            subsection_name = null;
+            if (!hasOption(configs, section_name.?, null, null)) {
+                try errors.append(allocator, Err.init(
+                    filename,
+                    node.startPoint().row,
+                    node.startPoint().column,
+                    node.endPoint().column,
+                    "Invalid section '{s}'",
+                    .{section_name.?},
+                ));
+                skipSection(cursor);
+                skip_children = true;
             }
-            const option_start = c;
-            const option_end = std.mem.findAnyPos(u8, line, c, "= ") orelse line.len;
-            if (level2 == null) {
-                const key = line[option_start..option_end];
-                if (!hasConfig(configs, level1.?, key, null)) {
-                    try errors.append(allocator, Err.init(filename, l, option_start, option_end, "Invalid key '{s}'", .{key}));
-                    continue;
-                }
-            } else {
-                const key = line[option_start..option_end];
-                if (!hasConfig(configs, level1.?, level2.?, key)) {
-                    try errors.append(allocator, Err.init(filename, l, option_start, option_end, "Invalid key '{s}'", .{key}));
-                    continue;
-                }
+        } else if (std.mem.eql(u8, node.kind(), "subsection_name")) {
+            subsection_name = content[node.startByte()..node.endByte()];
+            if (!hasOption(configs, section_name.?, subsection_name.?, null)) {
+                try errors.append(allocator, Err.init(
+                    filename,
+                    node.startPoint().row,
+                    node.startPoint().column,
+                    node.endPoint().column,
+                    "Invalid subsection '{s}.{s}'",
+                    .{ section_name.?, subsection_name.? },
+                ));
+                skipSection(cursor);
+                skip_children = true;
+            }
+        } else if (std.mem.eql(u8, node.kind(), "name")) {
+            const name = content[node.startByte()..node.endByte()];
+            if (!hasOption(configs, section_name.?, subsection_name, name)) {
+                try errors.append(allocator, Err.init(
+                    filename,
+                    node.startPoint().row,
+                    node.startPoint().column,
+                    node.endPoint().column,
+                    "Invalid option '{s}{s}{s}.{s}'",
+                    .{
+                        section_name.?,
+                        if (subsection_name != null) "." else "",
+                        subsection_name orelse "",
+                        name,
+                    },
+                ));
             }
         }
     }
+
     return errors;
 }
