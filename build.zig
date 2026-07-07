@@ -26,6 +26,12 @@ pub fn build(b: *std.Build) void {
     });
     exe.root_module.linkLibrary(ts_git_config.artifact("tree-sitter-git-config"));
 
+    const babel = b.dependency("babel", .{
+        .target = target,
+        .optimize = optimize,
+    });
+    exe.root_module.addImport("lsp", babel.module("lsp"));
+
     b.installArtifact(exe);
 
     const run_step = b.step("run", "Run the app");

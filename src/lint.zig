@@ -1,20 +1,19 @@
 const std = @import("std");
 
 const ts = @import("tree-sitter");
+const lsp = @import("lsp");
 
 const ConfigMap = @import("main.zig").ConfigMap;
 
 const Err = struct {
-    filename: []const u8,
-    line: usize,
-    char_start: usize,
-    char_end: usize,
+    start: lsp.types.Position,
+    end: lsp.types.Position,
     _buf: [100]u8 = undefined,
     _message_len: usize = undefined,
 
     const Self = @This();
-    fn init(filename: []const u8, line: usize, char_start: usize, char_end: usize, comptime fmt: []const u8, args: anytype) Self {
-        var err = Err{ .filename = filename, .line = line, .char_start = char_start, .char_end = char_end };
+    fn init(line: usize, char_start: usize, char_end: usize, comptime fmt: []const u8, args: anytype) Self {
+        var err = Err{ .start = .{ .line = line, .character = char_start }, .end = .{ .line = line, .character = char_end } };
         err._message_len = (std.fmt.bufPrint(&err._buf, fmt, args) catch @as([]u8, &err._buf)).len;
         return err;
     }
@@ -60,12 +59,12 @@ fn skipSection(cursor: *ts.TreeCursor) void {
     while (!std.mem.eql(u8, cursor.node().kind(), "section")) _ = cursor.gotoParent();
 }
 
-pub fn lint(allocator: std.mem.Allocator, configs: ConfigMap, filename: []const u8, content: []const u8, cursor: *ts.TreeCursor) !std.ArrayList(Err) {
+pub fn lint(allocator: std.mem.Allocator, configs: ConfigMap, content: []const u8, cursor: *ts.TreeCursor) !std.ArrayList(Err) {
     var errors = std.ArrayList(Err).empty;
     errdefer errors.deinit(allocator);
 
     if (cursor.node().isError()) {
-        try errors.append(allocator, Err.init(filename, 1, 1, 1, "Failed to parse config", .{}));
+        try errors.append(allocator, Err.init(1, 1, 1, "Failed to parse config", .{}));
         return errors;
     }
 
@@ -77,7 +76,6 @@ pub fn lint(allocator: std.mem.Allocator, configs: ConfigMap, filename: []const 
         const node = cursor.node();
         if (node.isError()) {
             try errors.append(allocator, Err.init(
-                filename,
                 node.startPoint().row,
                 node.startPoint().column,
                 node.endPoint().column,
@@ -91,7 +89,6 @@ pub fn lint(allocator: std.mem.Allocator, configs: ConfigMap, filename: []const 
             const parent = node.parent().?;
             const parent_expr = content[parent.startByte()..parent.endByte()];
             try errors.append(allocator, Err.init(
-                filename,
                 node.startPoint().row,
                 node.startPoint().column,
                 node.endPoint().column,
@@ -104,7 +101,6 @@ pub fn lint(allocator: std.mem.Allocator, configs: ConfigMap, filename: []const 
             subsection_name = null;
             if (!hasOption(configs, section_name.?, null, null)) {
                 try errors.append(allocator, Err.init(
-                    filename,
                     node.startPoint().row,
                     node.startPoint().column,
                     node.endPoint().column,
@@ -118,7 +114,6 @@ pub fn lint(allocator: std.mem.Allocator, configs: ConfigMap, filename: []const 
             subsection_name = content[node.startByte()..node.endByte()];
             if (!hasOption(configs, section_name.?, subsection_name.?, null)) {
                 try errors.append(allocator, Err.init(
-                    filename,
                     node.startPoint().row,
                     node.startPoint().column,
                     node.endPoint().column,
@@ -132,7 +127,6 @@ pub fn lint(allocator: std.mem.Allocator, configs: ConfigMap, filename: []const 
             const name = content[node.startByte()..node.endByte()];
             if (!hasOption(configs, section_name.?, subsection_name, name)) {
                 try errors.append(allocator, Err.init(
-                    filename,
                     node.startPoint().row,
                     node.startPoint().column,
                     node.endPoint().column,
