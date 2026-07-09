@@ -103,6 +103,7 @@ fn registerCallbacks(p: Lsp.SetupParameters) Lsp.SetupReturn {
         .{ .ChangeDocument = handleChange },
         .{ .SaveDocument = handleSave },
         .{ .CloseDocument = handleCloseDoc },
+        .{ .Formatting = handleFormat },
     });
 }
 
@@ -173,4 +174,86 @@ fn sendDiagnostics(allocator: std.mem.Allocator, server: *Lsp, state: *State, do
         .diagnostics = diagnostics.items,
     } };
     server.writeResponse(allocator, d) catch unreachable;
+}
+
+fn addText(allocator: std.mem.Allocator, text: *std.ArrayList(u8), new: []const u8) void {
+    text.appendSlice(allocator, new) catch unreachable;
+}
+fn addNodeText(allocator: std.mem.Allocator, content: []const u8, text: *std.ArrayList(u8), node: ts.Node) void {
+    addText(allocator, text, content[node.startByte()..node.endByte()]);
+}
+fn nextNode(cursor: *ts.TreeCursor, skip_children: bool) ?ts.Node {
+    if (!skip_children and cursor.gotoFirstChild()) return cursor.node();
+    if (cursor.gotoNextSibling()) return cursor.node();
+    while (cursor.gotoParent()) {
+        if (cursor.gotoNextSibling()) return cursor.node();
+    }
+    return null;
+}
+fn handleFormat(p: Lsp.FormattingParameters) Lsp.FormattingReturn {
+    const allocator = p.allocator;
+    const state: State = p.context.state.?;
+    const doc = p.context.document;
+    var cursor = state.tree.walk();
+    var edits = std.ArrayList(lsp.types.TextEdit).empty;
+    var new_text = std.ArrayList(u8).initCapacity(p.allocator, p.context.document.text.len) catch unreachable;
+
+    const content = doc.text;
+
+    var skip_children = false;
+    while (nextNode(&cursor, skip_children)) |node| {
+        skip_children = false;
+        if (std.mem.eql(u8, node.kind(), "section")) {
+            const prev = node.prevSibling() orelse continue;
+            if (prev.childCount() == 0) continue;
+            if (std.mem.eql(u8, prev.child(prev.childCount() - 1).?.kind(), "comment")) continue;
+            if (std.mem.eql(u8, (node.prevSibling() orelse continue).kind(), "section"))
+                addText(p.allocator, &new_text, "\n");
+        }
+        if (std.mem.eql(u8, node.kind(), "[")) addText(p.allocator, &new_text, "[");
+        if (std.mem.eql(u8, node.kind(), "section_name")) {
+            addNodeText(allocator, content, &new_text, node);
+            if (std.mem.eql(u8, (node.nextSibling() orelse continue).kind(), "\"")) addText(allocator, &new_text, " ");
+        }
+        if (std.mem.eql(u8, node.kind(), "\"")) addText(p.allocator, &new_text, "\"");
+        if (std.mem.eql(u8, node.kind(), "subsection_name")) addNodeText(allocator, content, &new_text, node);
+        if (std.mem.eql(u8, node.kind(), "]")) {
+            addText(allocator, &new_text, "]");
+            if (node.nextSibling() == null or !std.mem.eql(u8, node.nextSibling().?.kind(), "comment"))
+                addText(allocator, &new_text, "\n");
+        }
+        if (std.mem.eql(u8, node.kind(), "variable")) addText(allocator, &new_text, "    ");
+        if (std.mem.eql(u8, node.kind(), "name")) addNodeText(allocator, content, &new_text, node);
+        if (std.mem.eql(u8, node.kind(), "=")) {
+            addText(allocator, &new_text, " = ");
+        }
+        if (std.mem.eql(u8, node.kind(), "string") or
+            std.mem.eql(u8, node.kind(), "integer") or
+            std.mem.eql(u8, node.kind(), "true") or
+            std.mem.eql(u8, node.kind(), "false"))
+        {
+            skip_children = true;
+            addNodeText(allocator, content, &new_text, node);
+            if (node.nextSibling() == null or !std.mem.eql(u8, node.nextSibling().?.kind(), "comment"))
+                addText(allocator, &new_text, "\n");
+        }
+        if (std.mem.eql(u8, node.kind(), "comment")) {
+            if (node.nextSibling() == null and node.parent().?.nextSibling() != null) {
+                addText(p.allocator, &new_text, "\n");
+            } else if (node.prevSibling() != null) {
+                addText(p.allocator, &new_text, "    ");
+            }
+            addNodeText(allocator, content, &new_text, node);
+            addText(p.allocator, &new_text, "\n");
+        }
+    }
+
+    edits.append(allocator, .{
+        .newText = std.mem.trim(u8, new_text.items, &std.ascii.whitespace),
+        .range = .{
+            .start = .{ .line = 0, .character = 0 },
+            .end = doc.idxToPos(doc.text.len - 1).?,
+        },
+    }) catch unreachable;
+    return edits.items;
 }
