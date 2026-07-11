@@ -6,18 +6,20 @@ const lsp = @import("lsp");
 const lint = @import("lint.zig");
 
 const State = struct {
+    config_text: []const u8,
     configs: ConfigMap,
     language: *ts.Language,
     parser: *ts.Parser,
     tree: *ts.Tree,
 
     const Self = @This();
-    fn init(configs: ConfigMap, content: []const u8) Self {
+    fn init(config_text: []const u8, configs: ConfigMap, content: []const u8) Self {
         const language = tree_sitter_git_config();
         const parser = ts.Parser.create();
         parser.setLanguage(language) catch unreachable;
         const tree = parser.parseString(content, null) orelse unreachable;
         return State{
+            .config_text = config_text,
             .configs = configs,
             .language = language,
             .parser = parser,
@@ -55,7 +57,7 @@ fn createConfigMap(allocator: std.mem.Allocator, io: std.Io) !ConfigMap {
     try run_env.put("GIT_CONFIG", "/dev/null");
     const git_result = try std.process.run(allocator, io, .{ .argv = &[_][]const u8{ "git", "help", "--config" }, .environ_map = &run_env });
     if (git_result.term != .exited or git_result.term.exited != 0) {
-        std.debug.print("Failed to get manual for git-config: {s}\n", .{git_result.stderr});
+        std.debug.print("Failed to run git help --config: {s}\n", .{git_result.stderr});
         std.process.exit(1);
     }
     var lines = std.mem.splitScalar(u8, git_result.stdout, '\n');
@@ -98,18 +100,35 @@ pub fn main(init: std.process.Init) !u8 {
 }
 
 fn registerCallbacks(p: Lsp.SetupParameters) Lsp.SetupReturn {
-    p.server.registerCallbacks(comptime &[_]Lsp.Callback{
-        .{ .OpenDocument = handleOpenDoc },
-        .{ .ChangeDocument = handleChange },
-        .{ .SaveDocument = handleSave },
-        .{ .CloseDocument = handleCloseDoc },
-        .{ .Formatting = handleFormat },
-    });
+    p.server.registerCallback(.{ .OpenDocument = handleOpenDoc });
+    p.server.registerCallback(.{ .ChangeDocument = handleChange });
+    p.server.registerCallback(.{ .SaveDocument = handleSave });
+    p.server.registerCallback(.{ .CloseDocument = handleCloseDoc });
+    p.server.registerCallback(.{ .Formatting = handleFormat });
+    p.server.registerCallback(.{ .Hover = handleHover });
+}
+
+fn getConfigText(allocator: std.mem.Allocator, io: std.Io) ![]const u8 {
+    var run_env = try std.process.Environ.empty.createMap(allocator);
+    defer run_env.deinit();
+    try run_env.put("GIT_CONFIG_NOSYSTEM", "1");
+    try run_env.put("GIT_CONFIG_GLOBAL", "/dev/null");
+    try run_env.put("GIT_CONFIG", "/dev/null");
+    const res = try std.process.run(allocator, io, .{ .argv = &[_][]const u8{ "git", "config", "--help" }, .environ_map = &run_env });
+    if (res.term != .exited or res.term.exited != 0) {
+        std.debug.print("Failed to run git config --help: {s}\n", .{res.stderr});
+        std.process.exit(1);
+    }
+    allocator.free(res.stderr);
+    const config_section = res.stdout[std.mem.find(u8, res.stdout, "\nCONFIGURATION FILE\n").?..];
+    const variables_section = config_section[std.mem.find(u8, config_section, "\n   Variables\n").?..];
+    return variables_section[0..std.mem.find(u8, variables_section, "\nBUGS\n").?];
 }
 
 fn handleOpenDoc(p: Lsp.OpenDocumentParameters) void {
     const configs = createConfigMap(p.gpa, p.io) catch unreachable;
-    p.context.state = State.init(configs, p.context.document.text);
+    const config_text = getConfigText(p.gpa, p.io) catch unreachable;
+    p.context.state = State.init(config_text, configs, p.context.document.text);
     sendDiagnostics(p.allocator, p.context.server, &p.context.state.?, p.context.document);
 }
 
@@ -256,4 +275,63 @@ fn handleFormat(p: Lsp.FormattingParameters) Lsp.FormattingReturn {
         },
     }) catch unreachable;
     return edits.items;
+}
+
+fn countLeadingSpaces(config_text: []const u8, start: usize) usize {
+    const line_start = std.mem.findLast(u8, config_text[0..start], "\n").? + 1;
+    return config_text[line_start..start].len - std.mem.trim(u8, config_text[line_start..start], " ").len;
+}
+fn lookupDocumentation(config_text: []const u8, section_name: []const u8, subsection_name: ?[]const u8, name: ?[]const u8) ?[]const u8 {
+    var buf: [128]u8 = undefined;
+    const section = std.fmt.bufPrint(&buf, "   {s}{s}{s}{s}{s}\n", .{
+        section_name,
+        if (subsection_name) |_| "." else "",
+        if (subsection_name) |s| s else "",
+        if (name) |_| "." else "",
+        if (name) |n| n else "",
+    }) catch unreachable;
+    if (std.mem.find(u8, config_text, section)) |start| {
+        const leading_spaces = countLeadingSpaces(config_text, start + 3);
+        var lines = std.mem.splitScalar(u8, config_text[start..], '\n');
+        const start_line = lines.next().?;
+        var end = start + start_line.len;
+        while (lines.next()) |l| {
+            if (l.len == 0) {
+                end += 1;
+            } else if (countLeadingSpaces(config_text, end + l.len) > leading_spaces) {
+                end += l.len + 1;
+            } else break;
+        }
+        return config_text[std.mem.findScalarLast(u8, config_text[0..start], '\n').?..end];
+    }
+    return null;
+}
+fn handleHover(p: Lsp.HoverParameters) Lsp.HoverReturn {
+    const state: State = p.context.state.?;
+    const root = state.tree.rootNode();
+
+    const content = p.context.document.text;
+
+    const point: ts.Point = .{ .row = @intCast(p.position.line), .column = @intCast(p.position.character) };
+    const node = root.namedDescendantForPointRange(point, point) orelse return null;
+
+    if (std.mem.eql(u8, node.kind(), "section_name")) {
+        return lookupDocumentation(state.config_text, content[node.startByte()..node.endByte()], null, null);
+    }
+    if (std.mem.eql(u8, node.kind(), "subsection_name")) {
+        const section_node = node.prevNamedSibling().?;
+        std.debug.assert(std.mem.eql(u8, section_node.kind(), "section_name"));
+        return lookupDocumentation(state.config_text, content[section_node.startByte()..section_node.endByte()], content[node.startByte()..node.endByte()], null);
+    }
+    if (std.mem.eql(u8, node.kind(), "name")) {
+        var section_header = node.parent().?.prevSibling().?;
+        while (!std.mem.eql(u8, section_header.kind(), "section_header")) {
+            section_header = section_header.prevNamedSibling().?;
+        }
+        const section = section_header.namedChild(0).?;
+        const section_name = content[section.startByte()..section.endByte()];
+        const subsection_name = if (section.nextNamedSibling()) |s| content[s.startByte()..s.endByte()] else null;
+        return lookupDocumentation(state.config_text, section_name, subsection_name, content[node.startByte()..node.endByte()]);
+    }
+    return null;
 }
