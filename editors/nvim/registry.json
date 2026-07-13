@@ -1,0 +1,30 @@
+[
+  {
+    "name": "git-ls",
+    "description": "Help with writing git configuration",
+    "homepage": "https://github.com/mkindberg/git-ls",
+    "licenses": [ "MIT" ],
+    "languages": [],
+    "categories": [
+      "LSP"
+    ],
+    "source": {
+      "id": "pkg:github/mkindberg/git-ls@VERSION",
+      "asset": [
+        {
+          "target": "linux_x64",
+          "file": "git-ls_x86_64_linux.tar.gz",
+          "bin": "bin/git-ls"
+        },
+        {
+          "target": "darwin_arm64",
+          "file": "git-ls_aarch64_macos.tar.gz",
+          "bin": "bin/git-ls"
+        }
+      ]
+    },
+    "bin": {
+      "git-ls": "{{source.asset.bin}}"
+    }
+  }
+]
