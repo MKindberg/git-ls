@@ -1,7 +1,7 @@
 .{
-    .name = .git_config_ls,
-    .version = "0.0.0",
-    .fingerprint = 0xf39d5306769645d1,
+    .name = .git_ls,
+    .version = "0.1.0",
+    .fingerprint = 0xb3e8d11647f6d445,
     .minimum_zig_version = "0.16.0",
     .dependencies = .{
         .tree_sitter_git_config = .{

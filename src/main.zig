@@ -86,7 +86,7 @@ pub fn main(init: std.process.Init) !u8 {
     _ = args.skip();
 
     const server_info = lsp.types.ServerInfo{
-        .name = "git-config-ls",
+        .name = "git-ls",
         .version = "0.1.0",
     };
     var in_buffer: [1024]u8 = undefined;
@@ -184,7 +184,7 @@ fn sendDiagnostics(allocator: std.mem.Allocator, server: *Lsp, state: *State, do
                 .end = e.end,
             },
             .severity = .Error,
-            .source = "git-config-ls",
+            .source = "git-ls",
         }) catch unreachable;
     }
 
