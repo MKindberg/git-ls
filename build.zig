@@ -24,11 +24,14 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
-    exe.root_module.linkLibrary(ts_git_config.artifact("tree-sitter-git-config"));
+    exe.root_module.addCSourceFile(.{
+        .file = ts_git_config.path("src/parser.c"),
+    });
 
     const babel = b.dependency("babel", .{
         .target = target,
         .optimize = optimize,
+        .use_tree_sitter = true,
     });
     exe.root_module.addImport("lsp", babel.module("lsp"));
 
