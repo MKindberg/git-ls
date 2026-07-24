@@ -13,8 +13,8 @@
             .hash = "tree_sitter-0.26.0-8heIf-vDAQDh0HhAAUVwVZFmLrwSKMZl5gRaVFqtas0W",
         },
         .babel = .{
-            .url = "git+https://github.com/mkindberg/babel#c593144944fbdf951120f25efd754e506d305f44",
-            .hash = "babel-0.12.2-zYhD5y-4AQBKiFWDD7BP6e_-ILYsmftKg_Ca0WqNUgqy",
+            .url = "git+https://github.com/mkindberg/babel#f0db8d5c28f43502aee0f647531b328d48c0deb1",
+            .hash = "babel-0.12.2-zYhD52jLAQD3qVhUXOl5zzaBdSslk67HoOx_Gncf9aEO",
         },
     },
     .paths = .{

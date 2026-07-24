@@ -179,7 +179,6 @@ fn handleFormat(p: Lsp.FormattingParameters) Lsp.FormattingReturn {
     const allocator = p.arena.allocator();
     const doc = p.context.document;
     var cursor = doc.tree.?.walk();
-    var edits = std.ArrayList(lsp.types.TextEdit).empty;
     var new_text = std.ArrayList(u8).initCapacity(allocator, p.context.document.doc.text.len) catch unreachable;
 
     var skip_children = false;
@@ -230,13 +229,7 @@ fn handleFormat(p: Lsp.FormattingParameters) Lsp.FormattingReturn {
         }
     }
 
-    edits.append(allocator, .{
-        .newText = std.mem.trim(u8, new_text.items, &std.ascii.whitespace),
-        .range = .{
-            .start = .{ .line = 0, .character = 0 },
-            .end = doc.doc.idxToPos(doc.doc.text.len - 1).?,
-        },
-    }) catch unreachable;
+    const edits = doc.doc.transform(allocator, new_text.items) catch unreachable;
     return edits.items;
 }
 
