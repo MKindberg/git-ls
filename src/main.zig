@@ -178,6 +178,7 @@ fn nextNode(cursor: *ts.TreeCursor, skip_children: bool) ?ts.Node {
 fn handleFormat(p: Lsp.FormattingParameters) Lsp.FormattingReturn {
     const allocator = p.arena.allocator();
     const doc = p.context.document;
+    const content = doc.doc.text;
     var cursor = doc.tree.?.walk();
     var new_text = std.ArrayList(u8).initCapacity(allocator, p.context.document.doc.text.len) catch unreachable;
 
@@ -219,13 +220,50 @@ fn handleFormat(p: Lsp.FormattingParameters) Lsp.FormattingReturn {
                 addText(allocator, &new_text, "\n");
         }
         if (std.mem.eql(u8, node.kind(), "comment")) {
-            if (node.nextSibling() == null and node.parent().?.nextSibling() != null) {
-                addText(allocator, &new_text, "\n");
+            var first = node;
+            while (first.prevSibling()) |n| {
+                if (!std.mem.eql(u8, n.kind(), "comment")) break;
+                if (first.startByte() > 2 and
+                    content[first.startByte() - 1] == '\n' and
+                    content[first.startByte() - 2] == '\n')
+                    break;
+                first = n;
+            }
+            var last = node;
+            while (last.nextSibling()) |n| {
+                if (!std.mem.eql(u8, n.kind(), "comment")) break;
+                if (last.endByte() < content.len - 2 and
+                    content[last.endByte()] == '\n' and
+                    content[last.endByte() + 1] == '\n')
+                {
+                    break;
+                }
+                last = n;
+            }
+            var variable_comment = false;
+            if (last.endByte() < content.len - 2 and
+                content[last.endByte()] == '\n' and
+                content[last.endByte() + 1] == '\n')
+            {
+                variable_comment = true;
+            }
+            if (variable_comment == false and
+                last.nextSibling() == null and
+                last.parent().?.nextSibling() != null)
+            {
+                if (first.id == node.id) {
+                    addText(allocator, &new_text, "\n");
+                }
             } else if (node.prevSibling() != null) {
                 addText(allocator, &new_text, "    ");
             }
             addText(allocator, &new_text, doc.nodeText(node));
             addText(allocator, &new_text, "\n");
+            if (variable_comment == true and last.nextSibling() == null and last.parent().?.nextSibling() != null) {
+                if (last.id == node.id) {
+                    addText(allocator, &new_text, "\n");
+                }
+            }
         }
     }
 
