@@ -177,97 +177,12 @@ fn nextNode(cursor: *ts.TreeCursor, skip_children: bool) ?ts.Node {
 }
 fn handleFormat(p: Lsp.FormattingParameters) Lsp.FormattingReturn {
     const allocator = p.arena.allocator();
-    const doc = p.context.document;
+    const doc: lsp.TreeSitterDocument = p.context.document;
     const content = doc.doc.text;
-    var cursor = doc.tree.?.walk();
-    var new_text = std.ArrayList(u8).initCapacity(allocator, p.context.document.doc.text.len) catch unreachable;
 
-    var skip_children = false;
-    while (nextNode(&cursor, skip_children)) |node| {
-        skip_children = false;
-        if (std.mem.eql(u8, node.kind(), "section")) {
-            const prev = node.prevSibling() orelse continue;
-            if (prev.childCount() == 0) continue;
-            if (std.mem.eql(u8, prev.child(prev.childCount() - 1).?.kind(), "comment")) continue;
-            if (std.mem.eql(u8, (node.prevSibling() orelse continue).kind(), "section"))
-                addText(allocator, &new_text, "\n");
-        }
-        if (std.mem.eql(u8, node.kind(), "[")) addText(allocator, &new_text, "[");
-        if (std.mem.eql(u8, node.kind(), "section_name")) {
-            addText(allocator, &new_text, doc.nodeText(node));
-            if (std.mem.eql(u8, (node.nextSibling() orelse continue).kind(), "\"")) addText(allocator, &new_text, " ");
-        }
-        if (std.mem.eql(u8, node.kind(), "\"")) addText(allocator, &new_text, "\"");
-        if (std.mem.eql(u8, node.kind(), "subsection_name")) addText(allocator, &new_text, doc.nodeText(node));
-        if (std.mem.eql(u8, node.kind(), "]")) {
-            addText(allocator, &new_text, "]");
-            if (node.nextSibling() == null or !std.mem.eql(u8, node.nextSibling().?.kind(), "comment"))
-                addText(allocator, &new_text, "\n");
-        }
-        if (std.mem.eql(u8, node.kind(), "variable")) addText(allocator, &new_text, "    ");
-        if (std.mem.eql(u8, node.kind(), "name")) addText(allocator, &new_text, doc.nodeText(node));
-        if (std.mem.eql(u8, node.kind(), "=")) {
-            addText(allocator, &new_text, " = ");
-        }
-        if (std.mem.eql(u8, node.kind(), "string") or
-            std.mem.eql(u8, node.kind(), "integer") or
-            std.mem.eql(u8, node.kind(), "true") or
-            std.mem.eql(u8, node.kind(), "false"))
-        {
-            skip_children = true;
-            addText(allocator, &new_text, doc.nodeText(node));
-            if (node.nextSibling() == null or !std.mem.eql(u8, node.nextSibling().?.kind(), "comment"))
-                addText(allocator, &new_text, "\n");
-        }
-        if (std.mem.eql(u8, node.kind(), "comment")) {
-            var first = node;
-            while (first.prevSibling()) |n| {
-                if (!std.mem.eql(u8, n.kind(), "comment")) break;
-                if (first.startByte() > 2 and
-                    content[first.startByte() - 1] == '\n' and
-                    content[first.startByte() - 2] == '\n')
-                    break;
-                first = n;
-            }
-            var last = node;
-            while (last.nextSibling()) |n| {
-                if (!std.mem.eql(u8, n.kind(), "comment")) break;
-                if (last.endByte() < content.len - 2 and
-                    content[last.endByte()] == '\n' and
-                    content[last.endByte() + 1] == '\n')
-                {
-                    break;
-                }
-                last = n;
-            }
-            var variable_comment = false;
-            if (last.endByte() < content.len - 2 and
-                content[last.endByte()] == '\n' and
-                content[last.endByte() + 1] == '\n')
-            {
-                variable_comment = true;
-            }
-            if (variable_comment == false and
-                last.nextSibling() == null and
-                last.parent().?.nextSibling() != null)
-            {
-                if (first.id == node.id) {
-                    addText(allocator, &new_text, "\n");
-                }
-            } else if (node.prevSibling() != null) {
-                addText(allocator, &new_text, "    ");
-            }
-            addText(allocator, &new_text, doc.nodeText(node));
-            addText(allocator, &new_text, "\n");
-            if (variable_comment == true and last.nextSibling() == null and last.parent().?.nextSibling() != null) {
-                if (last.id == node.id) {
-                    addText(allocator, &new_text, "\n");
-                }
-            }
-        }
-    }
-
-    const edits = doc.doc.transform(allocator, new_text.items) catch unreachable;
+    const config = GitConfig.parse(allocator, content, doc.tree.?.rootNode()) catch unreachable;
+    const formatted = config.format(allocator, doc) catch unreachable;
+    const edits = doc.doc.transform(allocator, formatted.items) catch unreachable;
     return edits.items;
 }
 
@@ -329,3 +244,161 @@ fn handleHover(p: Lsp.HoverParameters) Lsp.HoverReturn {
     }
     return null;
 }
+
+const GitConfig = struct {
+    comment: std.ArrayList(ts.Node) = std.ArrayList(ts.Node).empty,
+    sections: std.ArrayList(Section) = std.ArrayList(Section).empty,
+
+    const Self = @This();
+    fn parse(allocator: std.mem.Allocator, content: []const u8, root: ts.Node) !Self {
+        var self = Self{};
+        var node: ?ts.Node = root.namedChild(0);
+        var section_comment = std.ArrayList(ts.Node).empty;
+        defer section_comment.deinit(allocator);
+        while (node) |n| {
+            if (std.mem.eql(u8, n.kind(), "comment")) {
+                try section_comment.append(allocator, n);
+
+                if (n.endByte() < content.len - 2 and
+                    content[n.endByte()] == '\n' and
+                    content[n.endByte() + 1] == '\n')
+                {
+                    try self.comment.appendSlice(allocator, section_comment.items);
+                    section_comment.clearRetainingCapacity();
+                }
+            } else if (std.mem.eql(u8, n.kind(), "section")) {
+                try self.sections.append(allocator, try Section.parse(allocator, content, &section_comment, n));
+            } else unreachable;
+            node = n.nextNamedSibling();
+        }
+        return self;
+    }
+    fn format(self: Self, allocator: std.mem.Allocator, doc: lsp.TreeSitterDocument) !std.ArrayList(u8) {
+        var formatted = try std.ArrayList(u8).initCapacity(allocator, doc.doc.text.len);
+
+        for (self.comment.items) |c| {
+            try formatted.appendSlice(allocator, doc.nodeText(c));
+            try formatted.append(allocator, '\n');
+        }
+        for (self.sections.items) |s| {
+            try s.format(allocator, doc, &formatted);
+            try formatted.append(allocator, '\n');
+        }
+
+        return formatted;
+    }
+};
+
+const Section = struct {
+    comment: std.ArrayList(ts.Node),
+    section: ts.Node,
+    subsection: ?ts.Node,
+    variables: std.ArrayList(Variable),
+
+    const Self = @This();
+    fn parse(allocator: std.mem.Allocator, content: []const u8, section_comment: *std.ArrayList(ts.Node), root: ts.Node) !Self {
+        var node: ?ts.Node = root.namedChild(0).?;
+        var self: Self = .{
+            .comment = try section_comment.clone(allocator),
+            .section = node.?.namedChild(0).?,
+            .subsection = node.?.namedChild(1),
+            .variables = std.ArrayList(Variable).empty,
+        };
+        section_comment.clearRetainingCapacity();
+        node = node.?.nextNamedSibling().?;
+        while (node) |n| {
+            if (std.mem.eql(u8, n.kind(), "comment")) {
+                try section_comment.append(allocator, n);
+                node = n.nextNamedSibling();
+            } else if (std.mem.eql(u8, n.kind(), "variable")) {
+                try self.variables.append(allocator, try Variable.parse(allocator, content, section_comment.*, &node.?));
+                section_comment.clearRetainingCapacity();
+                node = node.?.nextNamedSibling();
+            } else unreachable;
+        }
+        for (0..section_comment.items.len) |i| {
+            const idx = section_comment.items.len - 1 - i;
+            const n = section_comment.items[idx];
+            if (n.endByte() > content.len - 2) {
+                try self.variables.append(allocator, .{ .comment1 = try section_comment.clone(allocator) });
+                section_comment.clearRetainingCapacity();
+                break;
+            }
+            if (content[n.endByte()] == '\n' and content[n.endByte() + 1] == '\n') {
+                var v: Variable = .{ .comment1 = try section_comment.clone(allocator) };
+                section_comment.clearRetainingCapacity();
+                section_comment.appendSliceAssumeCapacity(v.comment1.items[idx+1..]);
+                v.comment1.shrinkAndFree(allocator, idx+1);
+                try self.variables.append(allocator, v);
+                break;
+            }
+        }
+
+        return self;
+    }
+
+    fn format(self: Self, allocator: std.mem.Allocator, doc: lsp.TreeSitterDocument, formatted: *std.ArrayList(u8)) !void {
+        for (self.comment.items) |c| {
+            try formatted.appendSlice(allocator, doc.nodeText(c));
+            try formatted.append(allocator, '\n');
+        }
+        try formatted.append(allocator, '[');
+        try formatted.appendSlice(allocator, doc.nodeText(self.section));
+        if (self.subsection) |s| {
+            try formatted.append(allocator, ' ');
+            try formatted.append(allocator, '"');
+            try formatted.appendSlice(allocator, doc.nodeText(s));
+            try formatted.append(allocator, '"');
+        }
+        try formatted.append(allocator, ']');
+        try formatted.append(allocator, '\n');
+
+        for (self.variables.items) |v| {
+            try v.format(allocator, doc, formatted);
+        }
+    }
+};
+const Variable = struct {
+    comment1: std.ArrayList(ts.Node),
+    name: ?ts.Node = null,
+    value: ?ts.Node = null,
+    comment2: ?ts.Node = null,
+
+    const Self = @This();
+    fn parse(allocator: std.mem.Allocator, content: []const u8, comment1: std.ArrayList(ts.Node), node: *ts.Node) !Self {
+        var self: Self = .{
+            .comment1 = try comment1.clone(allocator),
+            .name = node.namedChild(0),
+            .value = node.namedChild(1),
+        };
+        const next = node.nextNamedSibling() orelse return self;
+        if (std.mem.eql(u8, next.kind(), "comment") and std.mem.findScalar(u8, content[node.endByte()..next.startByte()], '\n') == null) {
+            self.comment2 = next;
+            node.* = next;
+        }
+        return self;
+    }
+
+    fn format(self: Self, allocator: std.mem.Allocator, doc: lsp.TreeSitterDocument, formatted: *std.ArrayList(u8)) !void {
+        for (self.comment1.items) |c| {
+            try formatted.appendSlice(allocator, "    ");
+            try formatted.appendSlice(allocator, doc.nodeText(c));
+            try formatted.append(allocator, '\n');
+        }
+        if (self.name == null) return;
+
+        try formatted.appendSlice(allocator, "    ");
+        try formatted.appendSlice(allocator, doc.nodeText(self.name.?));
+        if (self.value) |v| {
+            try formatted.append(allocator, ' ');
+            try formatted.append(allocator, '=');
+            try formatted.append(allocator, ' ');
+            try formatted.appendSlice(allocator, doc.nodeText(v));
+        }
+        if (self.comment2) |c| {
+            try formatted.append(allocator, ' ');
+            try formatted.appendSlice(allocator, doc.nodeText(c));
+        }
+        try formatted.append(allocator, '\n');
+    }
+};
