@@ -3,8 +3,6 @@ const std = @import("std");
 const ts = @import("tree-sitter");
 const lsp = @import("lsp");
 
-const lint = @import("lint.zig");
-
 const State = struct {
     config_text: []const u8,
     configs: ConfigMap,
@@ -88,8 +86,6 @@ pub fn main(init: std.process.Init) !u8 {
 
 fn registerCallbacks(p: Lsp.SetupParameters) Lsp.SetupReturn {
     p.server.registerCallback(.{ .OpenDocument = handleOpenDoc });
-    p.server.registerCallback(.{ .ChangeDocument = handleChange });
-    p.server.registerCallback(.{ .SaveDocument = handleSave });
     p.server.registerCallback(.{ .CloseDocument = handleCloseDoc });
     p.server.registerCallback(.{ .Formatting = handleFormat });
     p.server.registerCallback(.{ .Hover = handleHover });
@@ -117,7 +113,6 @@ fn handleOpenDoc(p: Lsp.OpenDocumentParameters) void {
     const config_text = getConfigText(p.gpa, p.io) catch unreachable;
     p.context.state = State.init(config_text, configs);
     p.context.document.init_ts(tree_sitter_git_config()) catch unreachable;
-    sendDiagnostics(p.arena.allocator(), p.context.server, &p.context.state.?, p.context.document);
 }
 
 fn handleCloseDoc(p: Lsp.CloseDocumentParameters) void {
@@ -127,41 +122,6 @@ fn handleCloseDoc(p: Lsp.CloseDocumentParameters) void {
 
 fn posToPoint(p: lsp.types.Position) ts.Point {
     return .{ .row = @intCast(p.line), .column = @intCast(p.character) };
-}
-fn handleChange(p: Lsp.ChangeDocumentParameters) void {
-    const allocator = p.arena.allocator();
-    sendDiagnostics(allocator, p.context.server, &p.context.state.?, p.context.document);
-}
-
-fn handleSave(p: Lsp.SaveDocumentParameters) void {
-    _ = p;
-    // var state: State = p.context.state orelse return;
-    // sendDiagnostics(p.allocator, p.context.server, &state, p.context.document);
-}
-
-fn sendDiagnostics(allocator: std.mem.Allocator, server: *Lsp, state: *State, doc: Lsp.Document) void {
-    var diagnostics = std.ArrayList(lsp.types.Diagnostic).empty;
-
-    var cursor = doc.tree.?.walk();
-    const errors = lint.lint(allocator, state.configs, doc.doc.text, &cursor) catch unreachable;
-
-    for (errors.items) |e| {
-        diagnostics.append(allocator, .{
-            .message = e.message(),
-            .range = .{
-                .start = e.start,
-                .end = e.end,
-            },
-            .severity = .Error,
-            .source = "git-ls",
-        }) catch unreachable;
-    }
-
-    const d = lsp.types.Notification.PublishDiagnostics{ .params = .{
-        .uri = doc.doc.uri,
-        .diagnostics = diagnostics.items,
-    } };
-    server.writeResponse(allocator, d) catch unreachable;
 }
 
 fn addText(allocator: std.mem.Allocator, text: *std.ArrayList(u8), new: []const u8) void {
@@ -327,8 +287,8 @@ const Section = struct {
             if (content[n.endByte()] == '\n' and content[n.endByte() + 1] == '\n') {
                 var v: Variable = .{ .comment1 = try section_comment.clone(allocator) };
                 section_comment.clearRetainingCapacity();
-                section_comment.appendSliceAssumeCapacity(v.comment1.items[idx+1..]);
-                v.comment1.shrinkAndFree(allocator, idx+1);
+                section_comment.appendSliceAssumeCapacity(v.comment1.items[idx + 1 ..]);
+                v.comment1.shrinkAndFree(allocator, idx + 1);
                 try self.variables.append(allocator, v);
                 break;
             }

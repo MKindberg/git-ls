@@ -1,6 +1,6 @@
 # git-ls
 
-A language server for git config files. A bit rough around the edges but still working decently. Supports Hover, Formatting and Diagnostics, see Issues for known issues.
+A language server for git config files. Supports Formatting and partly Hover.
 
 ## Installation
 
