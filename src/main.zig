@@ -85,10 +85,10 @@ pub fn main(init: std.process.Init) !u8 {
 }
 
 fn registerCallbacks(p: Lsp.SetupParameters) Lsp.SetupReturn {
-    p.server.registerCallback(.{ .OpenDocument = handleOpenDoc });
-    p.server.registerCallback(.{ .CloseDocument = handleCloseDoc });
-    p.server.registerCallback(.{ .Formatting = handleFormat });
-    p.server.registerCallback(.{ .Hover = handleHover });
+    p.server.registerCallback(.{ .@"textDocument/didOpen" = handleOpenDoc });
+    p.server.registerCallback(.{ .@"textDocument/didClose" = handleCloseDoc });
+    p.server.registerCallback(.{ .@"textDocument/formatting" = handleFormat });
+    p.server.registerCallback(.{ .@"textDocument/hover" = handleHover });
 }
 
 fn getConfigText(allocator: std.mem.Allocator, io: std.Io) ![]const u8 {
@@ -109,8 +109,8 @@ fn getConfigText(allocator: std.mem.Allocator, io: std.Io) ![]const u8 {
 }
 
 fn handleOpenDoc(p: Lsp.OpenDocumentParameters) void {
-    const configs = createConfigMap(p.gpa, p.io) catch unreachable;
-    const config_text = getConfigText(p.gpa, p.io) catch unreachable;
+    const configs = createConfigMap(p.context.server.allocator, p.context.server.io) catch unreachable;
+    const config_text = getConfigText(p.context.server.allocator, p.context.server.io) catch unreachable;
     p.context.state = State.init(config_text, configs);
     p.context.document.init_ts(tree_sitter_git_config()) catch unreachable;
 }
@@ -181,16 +181,16 @@ fn handleHover(p: Lsp.HoverParameters) Lsp.HoverReturn {
 
     const content = p.context.document.doc.text;
 
-    const point: ts.Point = .{ .row = @intCast(p.position.line), .column = @intCast(p.position.character) };
+    const point: ts.Point = .{ .row = @intCast(p.params.position.line), .column = @intCast(p.params.position.character) };
     const node = root.namedDescendantForPointRange(point, point) orelse return null;
 
     if (std.mem.eql(u8, node.kind(), "section_name")) {
-        return lookupDocumentation(state.config_text, content[node.startByte()..node.endByte()], null, null);
+        return .{ .contents = lookupDocumentation(state.config_text, content[node.startByte()..node.endByte()], null, null) orelse return null };
     }
     if (std.mem.eql(u8, node.kind(), "subsection_name")) {
         const section_node = node.prevNamedSibling().?;
         std.debug.assert(std.mem.eql(u8, section_node.kind(), "section_name"));
-        return lookupDocumentation(state.config_text, content[section_node.startByte()..section_node.endByte()], content[node.startByte()..node.endByte()], null);
+        return .{ .contents = lookupDocumentation(state.config_text, content[section_node.startByte()..section_node.endByte()], content[node.startByte()..node.endByte()], null) orelse return null };
     }
     if (std.mem.eql(u8, node.kind(), "name")) {
         var section_header = node.parent().?.prevSibling().?;
@@ -200,7 +200,7 @@ fn handleHover(p: Lsp.HoverParameters) Lsp.HoverReturn {
         const section = section_header.namedChild(0).?;
         const section_name = content[section.startByte()..section.endByte()];
         const subsection_name = if (section.nextNamedSibling()) |s| content[s.startByte()..s.endByte()] else null;
-        return lookupDocumentation(state.config_text, section_name, subsection_name, content[node.startByte()..node.endByte()]);
+        return .{ .contents = lookupDocumentation(state.config_text, section_name, subsection_name, content[node.startByte()..node.endByte()]) orelse return null };
     }
     return null;
 }
