@@ -3,6 +3,16 @@ const std = @import("std");
 const ts = @import("tree-sitter");
 const lsp = @import("lsp");
 
+const Lsp = lsp.Lsp(.{
+    .state_type = State,
+    .document_type = lsp.TreeSitterDocument,
+    .config_options = &[_][]const u8{"newline_after_section"},
+});
+
+const FormattingOptions = struct {
+    newline_after_section: bool = true,
+};
+
 const State = struct {
     config_text: []const u8,
     configs: ConfigMap,
@@ -23,7 +33,8 @@ const State = struct {
         _ = self;
     }
 };
-const Lsp = lsp.Lsp(.{ .state_type = State, .document_type = lsp.TreeSitterDocument });
+
+var format_options: FormattingOptions = .{};
 
 extern fn tree_sitter_git_config() callconv(.c) *ts.Language;
 const Io = std.Io;
@@ -89,6 +100,7 @@ fn registerCallbacks(p: Lsp.SetupParameters) Lsp.SetupReturn {
     p.server.registerCallback(.{ .@"textDocument/didClose" = handleCloseDoc });
     p.server.registerCallback(.{ .@"textDocument/formatting" = handleFormat });
     p.server.registerCallback(.{ .@"textDocument/hover" = handleHover });
+    p.server.registerCallback(.{ .@"workspace/didChangeConfiguration" = handleNewConfig });
 }
 
 fn getConfigText(allocator: std.mem.Allocator, io: std.Io) ![]const u8 {
@@ -141,9 +153,13 @@ fn handleFormat(p: Lsp.FormattingParameters) Lsp.FormattingReturn {
     const content = doc.doc.text;
 
     const config = GitConfig.parse(allocator, content, doc.tree.?.rootNode()) catch unreachable;
-    const formatted = config.format(allocator, doc) catch unreachable;
+    const formatted = config.format(allocator, format_options, doc) catch unreachable;
     const edits = doc.doc.transform(allocator, formatted.items) catch unreachable;
     return edits.items;
+}
+
+fn handleNewConfig(p: Lsp.ConfigurationChangeParameters) Lsp.ConfigurationChangeReturn {
+    format_options.newline_after_section = p.result[0].bool;
 }
 
 fn countLeadingSpaces(config_text: []const u8, start: usize) usize {
@@ -233,7 +249,7 @@ const GitConfig = struct {
         }
         return self;
     }
-    fn format(self: Self, allocator: std.mem.Allocator, doc: lsp.TreeSitterDocument) !std.ArrayList(u8) {
+    fn format(self: Self, allocator: std.mem.Allocator, options: FormattingOptions, doc: lsp.TreeSitterDocument) !std.ArrayList(u8) {
         var formatted = try std.ArrayList(u8).initCapacity(allocator, doc.doc.text.len);
 
         for (self.comment.items) |c| {
@@ -242,7 +258,9 @@ const GitConfig = struct {
         }
         for (self.sections.items) |s| {
             try s.format(allocator, doc, &formatted);
-            try formatted.append(allocator, '\n');
+            if (options.newline_after_section) {
+                try formatted.append(allocator, '\n');
+            }
         }
 
         return formatted;
