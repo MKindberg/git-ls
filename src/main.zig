@@ -6,11 +6,17 @@ const lsp = @import("lsp");
 const Lsp = lsp.Lsp(.{
     .state_type = State,
     .document_type = lsp.TreeSitterDocument,
-    .config_options = &[_][]const u8{"newline_after_section"},
+    .config_options = &[_][]const u8{
+        "newline_after_section",
+        "sort_options",
+        "sort_sections",
+    },
 });
 
 const FormattingOptions = struct {
     newline_after_section: bool = true,
+    sort_options: bool = false,
+    sort_sections: bool = false,
 };
 
 const State = struct {
@@ -150,16 +156,17 @@ fn nextNode(cursor: *ts.TreeCursor, skip_children: bool) ?ts.Node {
 fn handleFormat(p: Lsp.FormattingParameters) Lsp.FormattingReturn {
     const allocator = p.arena.allocator();
     const doc: lsp.TreeSitterDocument = p.context.document;
-    const content = doc.doc.text;
 
-    const config = GitConfig.parse(allocator, content, doc.tree.?.rootNode()) catch unreachable;
+    const config = GitConfig.parse(allocator, doc, doc.tree.?.rootNode()) catch unreachable;
     const formatted = config.format(allocator, format_options, doc) catch unreachable;
     const edits = doc.doc.transform(allocator, formatted.items) catch unreachable;
     return edits.items;
 }
 
 fn handleNewConfig(p: Lsp.ConfigurationChangeParameters) Lsp.ConfigurationChangeReturn {
-    format_options.newline_after_section = p.result[0].bool;
+    if (p.result[0] == .bool) format_options.newline_after_section = p.result[0].bool;
+    if (p.result[1] == .bool) format_options.sort_options = p.result[1].bool;
+    if (p.result[2] == .bool) format_options.sort_sections = p.result[2].bool;
 }
 
 fn countLeadingSpaces(config_text: []const u8, start: usize) usize {
@@ -206,7 +213,14 @@ fn handleHover(p: Lsp.HoverParameters) Lsp.HoverReturn {
     if (std.mem.eql(u8, node.kind(), "subsection_name")) {
         const section_node = node.prevNamedSibling().?;
         std.debug.assert(std.mem.eql(u8, section_node.kind(), "section_name"));
-        return .{ .contents = lookupDocumentation(state.config_text, content[section_node.startByte()..section_node.endByte()], content[node.startByte()..node.endByte()], null) orelse return null };
+        return .{
+            .contents = lookupDocumentation(
+                state.config_text,
+                content[section_node.startByte()..section_node.endByte()],
+                content[node.startByte()..node.endByte()],
+                null,
+            ) orelse return null,
+        };
     }
     if (std.mem.eql(u8, node.kind(), "name")) {
         var section_header = node.parent().?.prevSibling().?;
@@ -216,7 +230,12 @@ fn handleHover(p: Lsp.HoverParameters) Lsp.HoverReturn {
         const section = section_header.namedChild(0).?;
         const section_name = content[section.startByte()..section.endByte()];
         const subsection_name = if (section.nextNamedSibling()) |s| content[s.startByte()..s.endByte()] else null;
-        return .{ .contents = lookupDocumentation(state.config_text, section_name, subsection_name, content[node.startByte()..node.endByte()]) orelse return null };
+        return .{ .contents = lookupDocumentation(
+            state.config_text,
+            section_name,
+            subsection_name,
+            content[node.startByte()..node.endByte()],
+        ) orelse return null };
     }
     return null;
 }
@@ -226,7 +245,8 @@ const GitConfig = struct {
     sections: std.ArrayList(Section) = std.ArrayList(Section).empty,
 
     const Self = @This();
-    fn parse(allocator: std.mem.Allocator, content: []const u8, root: ts.Node) !Self {
+    fn parse(allocator: std.mem.Allocator, doc: lsp.TreeSitterDocument, root: ts.Node) !Self {
+        const content = doc.doc.text;
         var self = Self{};
         var node: ?ts.Node = root.namedChild(0);
         var section_comment = std.ArrayList(ts.Node).empty;
@@ -243,9 +263,12 @@ const GitConfig = struct {
                     section_comment.clearRetainingCapacity();
                 }
             } else if (std.mem.eql(u8, n.kind(), "section")) {
-                try self.sections.append(allocator, try Section.parse(allocator, content, &section_comment, n));
+                try self.sections.append(allocator, try Section.parse(allocator, doc, &section_comment, n));
             } else unreachable;
             node = n.nextNamedSibling();
+        }
+        if (format_options.sort_sections) {
+            std.mem.sort(Section, self.sections.items, doc, Section.order);
         }
         return self;
     }
@@ -274,7 +297,12 @@ const Section = struct {
     variables: std.ArrayList(Variable),
 
     const Self = @This();
-    fn parse(allocator: std.mem.Allocator, content: []const u8, section_comment: *std.ArrayList(ts.Node), root: ts.Node) !Self {
+    fn order(doc: lsp.TreeSitterDocument, a: Self, b: Self) bool {
+        return std.ascii.orderIgnoreCase(doc.nodeText(a.section), doc.nodeText(b.section)) == .lt;
+    }
+
+    fn parse(allocator: std.mem.Allocator, doc: lsp.TreeSitterDocument, section_comment: *std.ArrayList(ts.Node), root: ts.Node) !Self {
+        const content = doc.doc.text;
         var node: ?ts.Node = root.namedChild(0).?;
         var self: Self = .{
             .comment = try section_comment.clone(allocator),
@@ -289,7 +317,7 @@ const Section = struct {
                 try section_comment.append(allocator, n);
                 node = n.nextNamedSibling();
             } else if (std.mem.eql(u8, n.kind(), "variable")) {
-                try self.variables.append(allocator, try Variable.parse(allocator, content, section_comment.*, &node.?));
+                try self.variables.append(allocator, try Variable.parse(allocator, doc, section_comment.*, &node.?));
                 section_comment.clearRetainingCapacity();
                 node = node.?.nextNamedSibling();
             } else unreachable;
@@ -312,6 +340,9 @@ const Section = struct {
             }
         }
 
+        if (format_options.sort_options) {
+            std.mem.sort(Variable, self.variables.items, doc, Variable.order);
+        }
         return self;
     }
 
@@ -343,7 +374,14 @@ const Variable = struct {
     comment2: ?ts.Node = null,
 
     const Self = @This();
-    fn parse(allocator: std.mem.Allocator, content: []const u8, comment1: std.ArrayList(ts.Node), node: *ts.Node) !Self {
+    fn order(doc: lsp.TreeSitterDocument, a: Self, b: Self) bool {
+        if (b.name == null) return false;
+        if (a.name == null) return true;
+        return std.ascii.orderIgnoreCase(doc.nodeText(a.name.?), doc.nodeText(b.name.?)) == .lt;
+    }
+
+    fn parse(allocator: std.mem.Allocator, doc: lsp.TreeSitterDocument, comment1: std.ArrayList(ts.Node), node: *ts.Node) !Self {
+        const content = doc.doc.text;
         var self: Self = .{
             .comment1 = try comment1.clone(allocator),
             .name = node.namedChild(0),
