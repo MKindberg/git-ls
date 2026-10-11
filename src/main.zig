@@ -282,6 +282,8 @@ const GitConfig = struct {
             try formatted.appendSlice(allocator, doc.nodeText(c));
             try formatted.append(allocator, '\n');
         }
+        if (self.comment.items.len != 0) try formatted.append(allocator, '\n');
+
         for (self.sections.items) |s| {
             try s.format(allocator, doc, &formatted);
             if (options.newline_after_section) {
