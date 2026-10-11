@@ -267,6 +267,7 @@ const GitConfig = struct {
             } else unreachable;
             node = n.nextNamedSibling();
         }
+        try self.comment.appendSlice(allocator, section_comment.items);
         if (format_options.sort_sections) {
             std.mem.sort(Section, self.sections.items, doc, Section.order);
         }
