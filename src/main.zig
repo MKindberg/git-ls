@@ -157,6 +157,8 @@ fn handleFormat(p: Lsp.FormattingParameters) Lsp.FormattingReturn {
     const allocator = p.arena.allocator();
     const doc: lsp.TreeSitterDocument = p.context.document;
 
+    if (doc.tree.?.rootNode().hasError()) return null;
+
     const config = GitConfig.parse(allocator, doc, doc.tree.?.rootNode()) catch unreachable;
     const formatted = config.format(allocator, format_options, doc) catch unreachable;
     const edits = doc.doc.transform(allocator, formatted.items) catch unreachable;
