@@ -312,7 +312,7 @@ const Section = struct {
             .variables = std.ArrayList(Variable).empty,
         };
         section_comment.clearRetainingCapacity();
-        node = node.?.nextNamedSibling().?;
+        node = node.?.nextNamedSibling() orelse return self;
         while (node) |n| {
             if (std.mem.eql(u8, n.kind(), "comment")) {
                 try section_comment.append(allocator, n);
