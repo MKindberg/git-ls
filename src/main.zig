@@ -160,8 +160,9 @@ fn handleFormat(p: Lsp.FormattingParameters) Lsp.FormattingReturn {
     if (doc.tree.?.rootNode().hasError()) return null;
 
     const config = GitConfig.parse(allocator, doc, doc.tree.?.rootNode()) catch unreachable;
-    const formatted = config.format(allocator, format_options, doc) catch unreachable;
-    const edits = doc.doc.transform(allocator, formatted.items) catch unreachable;
+    var formatted = config.format(allocator, format_options, doc) catch unreachable;
+    formatted.writer.flush() catch unreachable;
+    const edits = doc.doc.transform(allocator, formatted.written()) catch unreachable;
     return edits.items;
 }
 
@@ -275,19 +276,20 @@ const GitConfig = struct {
         }
         return self;
     }
-    fn format(self: Self, allocator: std.mem.Allocator, options: FormattingOptions, doc: lsp.TreeSitterDocument) !std.ArrayList(u8) {
-        var formatted = try std.ArrayList(u8).initCapacity(allocator, doc.doc.text.len);
+    fn format(self: Self, allocator: std.mem.Allocator, options: FormattingOptions, doc: lsp.TreeSitterDocument) !std.Io.Writer.Allocating {
+        var formatted = try std.Io.Writer.Allocating.initCapacity(allocator, doc.doc.text.len);
+        var writer = &formatted.writer;
 
         for (self.comment.items) |c| {
-            try formatted.appendSlice(allocator, doc.nodeText(c));
-            try formatted.append(allocator, '\n');
+            try writer.writeAll(doc.nodeText(c));
+            try writer.writeByte('\n');
         }
-        if (self.comment.items.len != 0) try formatted.append(allocator, '\n');
+        if (self.comment.items.len != 0) try writer.writeByte('\n');
 
         for (self.sections.items) |s| {
-            try s.format(allocator, doc, &formatted);
+            try s.format(doc, writer);
             if (options.newline_after_section) {
-                try formatted.append(allocator, '\n');
+                try writer.writeByte('\n');
             }
         }
 
@@ -351,24 +353,24 @@ const Section = struct {
         return self;
     }
 
-    fn format(self: Self, allocator: std.mem.Allocator, doc: lsp.TreeSitterDocument, formatted: *std.ArrayList(u8)) !void {
+    fn format(self: Self, doc: lsp.TreeSitterDocument, formatted: *std.Io.Writer) !void {
         for (self.comment.items) |c| {
-            try formatted.appendSlice(allocator, doc.nodeText(c));
-            try formatted.append(allocator, '\n');
+            try formatted.writeAll(doc.nodeText(c));
+            try formatted.writeByte('\n');
         }
-        try formatted.append(allocator, '[');
-        try formatted.appendSlice(allocator, doc.nodeText(self.section));
+        try formatted.writeByte('[');
+        try formatted.writeAll(doc.nodeText(self.section));
         if (self.subsection) |s| {
-            try formatted.append(allocator, ' ');
-            try formatted.append(allocator, '"');
-            try formatted.appendSlice(allocator, doc.nodeText(s));
-            try formatted.append(allocator, '"');
+            try formatted.writeByte(' ');
+            try formatted.writeByte('"');
+            try formatted.writeAll(doc.nodeText(s));
+            try formatted.writeByte('"');
         }
-        try formatted.append(allocator, ']');
-        try formatted.append(allocator, '\n');
+        try formatted.writeByte(']');
+        try formatted.writeByte('\n');
 
         for (self.variables.items) |v| {
-            try v.format(allocator, doc, formatted);
+            try v.format(doc, formatted);
         }
     }
 };
@@ -400,26 +402,26 @@ const Variable = struct {
         return self;
     }
 
-    fn format(self: Self, allocator: std.mem.Allocator, doc: lsp.TreeSitterDocument, formatted: *std.ArrayList(u8)) !void {
+    fn format(self: Self, doc: lsp.TreeSitterDocument, formatted: *std.Io.Writer) !void {
         for (self.comment1.items) |c| {
-            try formatted.appendSlice(allocator, "    ");
-            try formatted.appendSlice(allocator, doc.nodeText(c));
-            try formatted.append(allocator, '\n');
+            try formatted.writeAll("    ");
+            try formatted.writeAll(doc.nodeText(c));
+            try formatted.writeByte('\n');
         }
         if (self.name == null) return;
 
-        try formatted.appendSlice(allocator, "    ");
-        try formatted.appendSlice(allocator, doc.nodeText(self.name.?));
+        try formatted.writeAll("    ");
+        try formatted.writeAll(doc.nodeText(self.name.?));
         if (self.value) |v| {
-            try formatted.append(allocator, ' ');
-            try formatted.append(allocator, '=');
-            try formatted.append(allocator, ' ');
-            try formatted.appendSlice(allocator, doc.nodeText(v));
+            try formatted.writeByte(' ');
+            try formatted.writeByte('=');
+            try formatted.writeByte(' ');
+            try formatted.writeAll(doc.nodeText(v));
         }
         if (self.comment2) |c| {
-            try formatted.append(allocator, ' ');
-            try formatted.appendSlice(allocator, doc.nodeText(c));
+            try formatted.writeByte(' ');
+            try formatted.writeAll(doc.nodeText(c));
         }
-        try formatted.append(allocator, '\n');
+        try formatted.writeByte('\n');
     }
 };
