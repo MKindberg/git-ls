@@ -24,18 +24,12 @@ const FormattingOptions = struct {
 
 const State = struct {
     config_text: []const u8,
-    configs: ConfigMap,
 
     const Self = @This();
-    fn init(config_text: []const u8, configs: ConfigMap) Self {
+    fn init(config_text: []const u8) Self {
         return State{
             .config_text = config_text,
-            .configs = configs,
         };
-    }
-
-    fn parse(self: *Self, content: []const u8) void {
-        self.tree = self.parser.parseString(content, null) orelse unreachable;
     }
 
     fn deinit(self: Self) void {
@@ -46,50 +40,12 @@ const State = struct {
 var format_options: FormattingOptions = .{};
 
 extern fn tree_sitter_git_config() callconv(.c) *ts.Language;
-const Io = std.Io;
 
 const SubSubConfigMap = std.StringHashMap(void);
 const SubConfigMap = std.StringHashMap(SubSubConfigMap);
 pub const ConfigMap = std.StringHashMap(SubConfigMap);
 
-fn createConfigMap(allocator: std.mem.Allocator, io: std.Io) !ConfigMap {
-    var configs = ConfigMap.init(allocator);
-
-    var run_env = try std.process.Environ.empty.createMap(allocator);
-    defer run_env.deinit();
-    try run_env.put("GIT_CONFIG_NOSYSTEM", "1");
-    try run_env.put("GIT_CONFIG_GLOBAL", "/dev/null");
-    try run_env.put("GIT_CONFIG", "/dev/null");
-    const git_result = try std.process.run(allocator, io, .{ .argv = &[_][]const u8{ "git", "help", "--config" }, .environ_map = &run_env });
-    if (git_result.term != .exited or git_result.term.exited != 0) {
-        std.debug.print("Failed to run git help --config: {s}\n", .{git_result.stderr});
-        std.process.exit(1);
-    }
-    var lines = std.mem.splitScalar(u8, git_result.stdout, '\n');
-    while (lines.next()) |line| {
-        if (line.len == 0) break; // The list ends with an empty line
-        var parts = std.mem.splitScalar(u8, line, '.');
-
-        const p1 = parts.next().?;
-        const c1 = try configs.getOrPut(p1);
-        if (!c1.found_existing) c1.value_ptr.* = SubConfigMap.init(allocator);
-
-        const p2 = parts.next() orelse continue;
-        const c2 = try c1.value_ptr.getOrPut(p2);
-        if (!c2.found_existing) c2.value_ptr.* = SubSubConfigMap.init(allocator);
-
-        const p3 = parts.next() orelse continue;
-        const c3 = try c2.value_ptr.getOrPut(p3);
-        if (!c3.found_existing) c3.value_ptr.* = {};
-    }
-
-    return configs;
-}
-
 pub fn main(init: std.process.Init) !u8 {
-    var args = init.minimal.args.iterate();
-    _ = args.skip();
-
     const server_info = lsp.types.ServerInfo{
         .name = "git-ls",
         .version = "0.1.0",
@@ -130,9 +86,8 @@ fn getConfigText(allocator: std.mem.Allocator, io: std.Io) ![]const u8 {
 }
 
 fn handleOpenDoc(p: Lsp.OpenDocumentParameters) void {
-    const configs = createConfigMap(p.context.server.allocator, p.context.server.io) catch unreachable;
     const config_text = getConfigText(p.context.server.allocator, p.context.server.io) catch unreachable;
-    p.context.state = State.init(config_text, configs);
+    p.context.state = State.init(config_text);
     p.context.document.init_ts(tree_sitter_git_config()) catch unreachable;
 }
 
@@ -141,21 +96,6 @@ fn handleCloseDoc(p: Lsp.CloseDocumentParameters) void {
     state.deinit();
 }
 
-fn posToPoint(p: lsp.types.Position) ts.Point {
-    return .{ .row = @intCast(p.line), .column = @intCast(p.character) };
-}
-
-fn addText(allocator: std.mem.Allocator, text: *std.ArrayList(u8), new: []const u8) void {
-    text.appendSlice(allocator, new) catch unreachable;
-}
-fn nextNode(cursor: *ts.TreeCursor, skip_children: bool) ?ts.Node {
-    if (!skip_children and cursor.gotoFirstChild()) return cursor.node();
-    if (cursor.gotoNextSibling()) return cursor.node();
-    while (cursor.gotoParent()) {
-        if (cursor.gotoNextSibling()) return cursor.node();
-    }
-    return null;
-}
 fn handleFormat(p: Lsp.FormattingParameters) Lsp.FormattingReturn {
     const allocator = p.arena.allocator();
     const doc: lsp.TreeSitterDocument = p.context.document;
