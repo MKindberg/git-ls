@@ -14,6 +14,9 @@ const Lsp = lsp.Lsp(.{
 });
 
 const FormattingOptions = struct {
+    tabSize: u32 = 4,
+    insertSpaces: bool = true,
+
     newline_after_section: bool = true,
     sort_options: bool = false,
     sort_sections: bool = false,
@@ -156,6 +159,8 @@ fn nextNode(cursor: *ts.TreeCursor, skip_children: bool) ?ts.Node {
 fn handleFormat(p: Lsp.FormattingParameters) Lsp.FormattingReturn {
     const allocator = p.arena.allocator();
     const doc: lsp.TreeSitterDocument = p.context.document;
+    format_options.tabSize = p.params.options.tabSize;
+    format_options.insertSpaces = p.params.options.insertSpaces;
 
     if (doc.tree.?.rootNode().hasError()) return null;
 
@@ -402,15 +407,22 @@ const Variable = struct {
         return self;
     }
 
+    fn writeIndent(formatted: *std.Io.Writer) !void {
+        if (format_options.insertSpaces) {
+            try formatted.splatByteAll(' ', format_options.tabSize);
+        } else {
+            try formatted.writeByte('\t');
+        }
+    }
     fn format(self: Self, doc: lsp.TreeSitterDocument, formatted: *std.Io.Writer) !void {
         for (self.comment1.items) |c| {
-            try formatted.writeAll("    ");
+            try writeIndent(formatted);
             try formatted.writeAll(doc.nodeText(c));
             try formatted.writeByte('\n');
         }
         if (self.name == null) return;
 
-        try formatted.writeAll("    ");
+        try writeIndent(formatted);
         try formatted.writeAll(doc.nodeText(self.name.?));
         if (self.value) |v| {
             try formatted.writeByte(' ');
