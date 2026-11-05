@@ -2,19 +2,19 @@
     .name = .git_ls,
     .version = "0.1.0",
     .fingerprint = 0xb3e8d11647f6d445,
-    .minimum_zig_version = "0.16.0",
+    .minimum_zig_version = "0.17.0",
     .dependencies = .{
         .tree_sitter_git_config = .{
             .url = "https://github.com/the-mikedavis/tree-sitter-git-config/archive/main.tar.gz",
             .hash = "N-V-__8AADKRCwBbB-fkZOpqnneFOcqgcMRCDbVhW4GfzIBg",
         },
         .tree_sitter = .{
-            .url = "git+https://github.com/tree-sitter/zig-tree-sitter#b562510b5563dcf3b7fcac4a5fe9d60834c84667",
-            .hash = "tree_sitter-0.26.0-8heIf-vDAQDh0HhAAUVwVZFmLrwSKMZl5gRaVFqtas0W",
+            .url = "git+https://github.com/mkindberg/zig-tree-sitter#592f078e44465fb9d532a8b42240f1c47dee0e0c",
+            .hash = "tree_sitter-0.26.0-8heIf7rEAQAKP3LuF5hxCfO5wd74iUQgOthq83HHxEhq",
         },
         .babel = .{
-            .url = "git+https://github.com/mkindberg/babel#332ecd3576325e388800d3dd784776b1e36f3567",
-            .hash = "babel-0.12.2-zYhD52D-AQBGBM0hLkqjIWzL2_Tj7c63_jNj3olUCLXi",
+            .url = "git+https://github.com/mkindberg/babel#88ee0475be7af40ab60ac9af0100d1c48de31650",
+            .hash = "babel-0.12.2-zYhD55H-AQA8QI21x574XHnrG3VB2gwK6VcEEzBhtiQs",
         },
     },
     .paths = .{
