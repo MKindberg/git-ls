@@ -1,3 +1,4 @@
+#!/bin/bash
 set -e
 RELEASE_DIR="release-$(git describe --tags)"
 rm -rf "${RELEASE_DIR}"
