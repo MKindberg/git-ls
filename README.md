@@ -9,9 +9,9 @@ Download the binary from releases and put it in your PATH or use Mason by adding
 Install the plugin and run its setup function, eg in Lazy.nvim: `{"mkindberg/git-ls", config = true}`, or set it up manually by adding the following code to your config
 
 ```lua
- vim.lsp.config.ghostty = {
-     cmd = {"ghostty-ls"},
-     filetypes = {"ghostty"},
+ vim.lsp.config.git = {
+     cmd = {"git-ls"},
+     filetypes = {"gitconfig"},
  }
- vim.lsp.enable("ghostty")
+ vim.lsp.enable("git")
 ```
