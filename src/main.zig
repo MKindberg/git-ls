@@ -100,16 +100,23 @@ fn countLeadingSpaces(text: []const u8, start: usize) usize {
     const line_start = std.mem.findLast(u8, text[0..start], "\n").? + 1;
     return text[line_start..start].len - std.mem.trim(u8, text[line_start..start], " ").len;
 }
-fn lookupDocumentation(text: []const u8, section_name: []const u8, subsection_name: ?[]const u8, name: ?[]const u8) ?[]const u8 {
-    var buf: [128]u8 = undefined;
-    const section = std.fmt.bufPrint(&buf, "   {s}{s}{s}{s}{s}\n", .{
+fn lookupDocumentation(allocator: std.mem.Allocator, text: []const u8, section_name: []const u8, subsection_name: ?[]const u8, name: ?[]const u8) ?[]const u8 {
+    if (findDocumentation(allocator, text, section_name, subsection_name, name)) |doc| return doc;
+    // The docs describe subsections generically, e.g. `remote.<name>.url`.
+    if (subsection_name != null) return findDocumentation(allocator, text, section_name, "<name>", name);
+    return null;
+}
+fn findDocumentation(allocator: std.mem.Allocator, text: []const u8, section_name: []const u8, subsection_name: ?[]const u8, name: ?[]const u8) ?[]const u8 {
+    const section = std.fmt.allocPrint(allocator, "   {s}{s}{s}{s}{s}\n", .{
         section_name,
         if (subsection_name) |_| "." else "",
         if (subsection_name) |s| s else "",
         if (name) |_| "." else "",
         if (name) |n| n else "",
-    }) catch unreachable;
-    if (std.mem.find(u8, text, section)) |start| {
+    }) catch return null;
+    defer allocator.free(section);
+    // Section and variable names are case-insensitive in git.
+    if (std.ascii.findIgnoreCase(text, section)) |start| {
         const leading_spaces = countLeadingSpaces(text, start + 3);
         var lines = std.mem.splitScalar(u8, text[start..], '\n');
         const start_line = lines.next().?;
@@ -134,13 +141,14 @@ fn handleHover(p: Lsp.HoverParameters) Lsp.HoverReturn {
     const node = root.namedDescendantForPointRange(point, point) orelse return null;
 
     if (std.mem.eql(u8, node.kind(), "section_name")) {
-        return .{ .contents = lookupDocumentation(config_text, content[node.startByte()..node.endByte()], null, null) orelse return null };
+        return .{ .contents = lookupDocumentation(p.arena.allocator(), config_text, content[node.startByte()..node.endByte()], null, null) orelse return null };
     }
     if (std.mem.eql(u8, node.kind(), "subsection_name")) {
         const section_node = node.prevNamedSibling().?;
         std.debug.assert(std.mem.eql(u8, section_node.kind(), "section_name"));
         return .{
             .contents = lookupDocumentation(
+                p.arena.allocator(),
                 config_text,
                 content[section_node.startByte()..section_node.endByte()],
                 content[node.startByte()..node.endByte()],
@@ -157,6 +165,7 @@ fn handleHover(p: Lsp.HoverParameters) Lsp.HoverReturn {
         const section_name = content[section.startByte()..section.endByte()];
         const subsection_name = if (section.nextNamedSibling()) |s| content[s.startByte()..s.endByte()] else null;
         return .{ .contents = lookupDocumentation(
+            p.arena.allocator(),
             config_text,
             section_name,
             subsection_name,
