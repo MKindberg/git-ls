@@ -5,7 +5,7 @@
     .minimum_zig_version = "0.17.0",
     .dependencies = .{
         .tree_sitter_git_config = .{
-            .url = "https://github.com/the-mikedavis/tree-sitter-git-config/archive/main.tar.gz",
+            .url = "https://github.com/the-mikedavis/tree-sitter-git-config/archive/3a61756a81a86291a0f48e3eeeaa0692b9981aa9.tar.gz",
             .hash = "N-V-__8AADKRCwBbB-fkZOpqnneFOcqgcMRCDbVhW4GfzIBg",
         },
         .tree_sitter = .{
